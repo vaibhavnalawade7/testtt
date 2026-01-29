@@ -7,7 +7,7 @@ from threading import Thread
 from ultralytics import YOLO
 import sys
 
-print("USING GSTREAMER CAMERA PIPELINE (FINAL)")
+print("USING GSTREAMER CAMERA PIPELINE (FINAL - USB SAFE)")
 
 # ------------------ MODEL ------------------
 MODEL_PATH = "yolov8n.pt"
@@ -79,13 +79,11 @@ def speak_worker(q):
 
 Thread(target=speak_worker, args=(speech_queue,), daemon=True).start()
 
-# ------------------ DISTANCE CALCULATION ------------------
+# ------------------ DISTANCE CALC ------------------
 def calculate_distance(box, frame_width, label):
     obj_width = box.xyxy[0][2] - box.xyxy[0][0]
-
     if label in class_avg_sizes:
         obj_width *= class_avg_sizes[label]
-
     distance = (frame_width * 0.5) / np.tan(np.radians(35)) / (obj_width + 1e-6)
     return round(float(distance), 2)
 
@@ -98,9 +96,9 @@ def get_position(frame_width, x1):
     else:
         return "right"
 
-# ------------------ CAMERA (GSTREAMER – FINAL) ------------------
+# ------------------ CAMERA (USB FINAL FIX) ------------------
 gst_pipeline = (
-    "v4l2src device=/dev/video0 ! "
+    "v4l2src device=/dev/video1 io-mode=2 ! "
     "video/x-raw,format=YUY2,width=640,height=480,framerate=30/1 ! "
     "videoconvert ! "
     "video/x-raw,format=BGR ! "
@@ -128,7 +126,6 @@ while True:
     for box in results.boxes:
         label = results.names[int(box.cls[0])]
         x1, y1, x2, y2 = map(int, box.xyxy[0])
-
         dist = calculate_distance(box, frame.shape[1], label)
 
         if dist < nearest_dist:
