@@ -1,17 +1,23 @@
-import cv2
-import time
+import gi
+gi.require_version('Gst', '1.0')
+from gi.repository import Gst
+
 import numpy as np
+import time
 import pyttsx3
-from queue import Queue
-from threading import Thread
 from ultralytics import YOLO
-import sys
+from threading import Thread
+from queue import Queue
 
-print("USING GSTREAMER CAMERA PIPELINE (LOCKED TO /dev/video0)")
+# ---------------- INIT ----------------
+Gst.init(None)
 
-MODEL_PATH = "yolov8n.pt"
-model = YOLO(MODEL_PATH)
+print("USING PURE GSTREAMER CAMERA (NO OPENCV CAPTURE)")
 
+# ---------------- YOLO ----------------
+model = YOLO("yolov8n.pt")
+
+# ---------------- TTS ----------------
 engine = pyttsx3.init()
 engine.setProperty("rate", 220)
 engine.say("System activated")
@@ -19,74 +25,63 @@ engine.runAndWait()
 
 speech_queue = Queue()
 last_spoken = {}
-last_distance = {}
 SPEECH_COOLDOWN = 5
 
-class_avg_sizes = {
-    "person": 2.5,
-    "car": 0.37,
-    "bicycle": 2.3,
-    "motorcycle": 2.4,
-    "bus": 0.3,
-    "traffic light": 2.95,
-    "stop sign": 2.55,
-    "bench": 1.6,
-    "cat": 1.9,
-    "dog": 1.5,
-}
-
+# ---------------- SPEECH THREAD ----------------
 def speak_worker(q):
     while True:
         if not q.empty():
-            label, distance, position = q.get()
-            now = time.time()
-
-            if label in last_spoken and now - last_spoken[label] < SPEECH_COOLDOWN:
-                continue
-
-            last_spoken[label] = now
-            engine.say(f"{label} {distance} meters {position}")
+            label, dist, pos = q.get()
+            engine.say(f"{label} {dist} meters {pos}")
             engine.runAndWait()
-
-            with q.mutex:
-                q.queue.clear()
-        time.sleep(0.1)
+            time.sleep(SPEECH_COOLDOWN)
 
 Thread(target=speak_worker, args=(speech_queue,), daemon=True).start()
 
-def calculate_distance(box, frame_width, label):
+# ---------------- DISTANCE ----------------
+def estimate_distance(box, frame_width):
     obj_width = box.xyxy[0][2] - box.xyxy[0][0]
-    if label in class_avg_sizes:
-        obj_width *= class_avg_sizes[label]
     return round((frame_width * 0.5) / (obj_width + 1e-6), 2)
 
-def get_position(frame_width, x1):
-    if x1 < frame_width // 3:
+def position(frame_width, x):
+    if x < frame_width // 3:
         return "left"
-    elif x1 < 2 * frame_width // 3:
+    elif x < 2 * frame_width // 3:
         return "center"
     else:
         return "right"
 
-gst_pipeline = (
-    "v4l2src device=/dev/video0 io-mode=2 ! "
+# ---------------- GSTREAMER PIPELINE ----------------
+pipeline = Gst.parse_launch(
+    "v4l2src device=/dev/video0 ! "
     "video/x-raw,format=YUY2,width=640,height=480,framerate=30/1 ! "
-    "videoconvert ! video/x-raw,format=BGR ! "
-    "appsink drop=true sync=false max-buffers=1"
+    "videoconvert ! video/x-raw,format=RGB ! "
+    "appsink name=sink emit-signals=true max-buffers=1 drop=true"
 )
 
-cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+appsink = pipeline.get_by_name("sink")
+pipeline.set_state(Gst.State.PLAYING)
 
-if not cap.isOpened():
-    print("ERROR: Cannot open camera via GStreamer")
-    sys.exit(1)
-
+# ---------------- MAIN LOOP ----------------
 while True:
-    ret, frame = cap.read()
-    if not ret:
-        print("Frame grab failed")
-        break
+    sample = appsink.emit("pull-sample")
+    if sample is None:
+        continue
 
+    buf = sample.get_buffer()
+    caps = sample.get_caps()
+    height = caps.get_structure(0).get_value("height")
+    width = caps.get_structure(0).get_value("width")
+
+    success, mapinfo = buf.map(Gst.MapFlags.READ)
+    if not success:
+        continue
+
+    frame = np.frombuffer(mapinfo.data, dtype=np.uint8)
+    frame = frame.reshape((height, width, 3))
+    buf.unmap(mapinfo)
+
+    # YOLO inference
     results = model(frame, conf=0.4, verbose=False)[0]
 
     nearest = None
@@ -94,17 +89,14 @@ while True:
 
     for box in results.boxes:
         label = results.names[int(box.cls[0])]
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        dist = calculate_distance(box, frame.shape[1], label)
+        dist = estimate_distance(box, width)
+        x1 = int(box.xyxy[0][0])
 
         if dist < min_dist:
             min_dist = dist
             nearest = (label, dist, x1)
 
     if nearest and min_dist <= 12:
-        label, dist, x1 = nearest
-        pos = get_position(frame.shape[1], x1)
+        label, dist, x = nearest
+        pos = position(width, x)
         speech_queue.put((label, dist, pos))
-
-cap.release()
-cv2.destroyAllWindows()
