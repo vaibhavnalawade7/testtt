@@ -5,6 +5,7 @@ from gi.repository import Gst
 import numpy as np
 import time
 import pyttsx3
+import cv2
 from ultralytics import YOLO
 from threading import Thread
 from queue import Queue
@@ -55,7 +56,7 @@ def position(frame_width, x):
 pipeline = Gst.parse_launch(
     "v4l2src device=/dev/video0 ! "
     "video/x-raw,format=YUY2,width=640,height=480,framerate=30/1 ! "
-    "videoconvert ! video/x-raw,format=RGB ! "
+    "videoconvert ! video/x-raw,format=BGR ! "
     "appsink name=sink emit-signals=true max-buffers=1 drop=true"
 )
 
@@ -81,7 +82,7 @@ while True:
     frame = frame.reshape((height, width, 3))
     buf.unmap(mapinfo)
 
-    # YOLO inference
+    # ---------------- YOLO ----------------
     results = model(frame, conf=0.4, verbose=False)[0]
 
     nearest = None
@@ -90,13 +91,36 @@ while True:
     for box in results.boxes:
         label = results.names[int(box.cls[0])]
         dist = estimate_distance(box, width)
-        x1 = int(box.xyxy[0][0])
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
 
         if dist < min_dist:
             min_dist = dist
             nearest = (label, dist, x1)
 
+        # Draw bounding box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(
+            frame,
+            f"{label} {dist}m",
+            (x1, y1 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 0),
+            2
+        )
+
     if nearest and min_dist <= 12:
         label, dist, x = nearest
         pos = position(width, x)
         speech_queue.put((label, dist, pos))
+
+    # ---------------- DISPLAY WINDOW ----------------
+    cv2.imshow("Blind Assistant Camera", frame)
+
+    # Press Q to quit
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# ---------------- CLEANUP ----------------
+pipeline.set_state(Gst.State.NULL)
+cv2.destroyAllWindows()
