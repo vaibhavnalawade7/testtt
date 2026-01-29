@@ -109,7 +109,8 @@ def get_position(frame_width, coords):
 # =====================================================
 pipeline = Gst.parse_launch(
     "v4l2src device=/dev/video0 ! "
-    "video/x-raw,format=YUY2,width=640,height=480,framerate=30/1 ! "
+    "image/jpeg,width=640,height=480,framerate=30/1 ! "
+    "jpegdec ! "
     "videoconvert ! video/x-raw,format=BGR ! "
     "appsink name=sink emit-signals=true max-buffers=1 drop=true"
 )
