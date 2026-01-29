@@ -7,7 +7,7 @@ from threading import Thread
 from ultralytics import YOLO
 import sys
 
-print("USING GSTREAMER CAMERA PIPELINE (FINAL - USB SAFE)")
+print("USING GSTREAMER CAMERA PIPELINE (LOCKED TO /dev/video0)")
 
 # ------------------ MODEL ------------------
 MODEL_PATH = "yolov8n.pt"
@@ -17,7 +17,6 @@ model = YOLO(MODEL_PATH)
 engine = pyttsx3.init()
 engine.setProperty("rate", 220)
 engine.setProperty("volume", 1.0)
-
 engine.say("System activated")
 engine.runAndWait()
 
@@ -25,7 +24,7 @@ engine.runAndWait()
 speech_queue = Queue()
 last_spoken = {}
 last_distance = {}
-SPEECH_COOLDOWN = 5  # seconds
+SPEECH_COOLDOWN = 5
 
 # ------------------ OBJECT WIDTH RATIOS ------------------
 class_avg_sizes = {
@@ -52,16 +51,13 @@ def speak_worker(q):
                 continue
 
             prev = last_distance.get(label)
+            motion = "ahead"
 
             if prev:
                 if distance < prev - 0.3:
                     motion = "approaching"
                 elif distance > prev + 0.3:
                     motion = "moving away"
-                else:
-                    motion = "ahead"
-            else:
-                motion = "ahead"
 
             if distance <= 2:
                 motion = "very close"
@@ -79,7 +75,7 @@ def speak_worker(q):
 
 Thread(target=speak_worker, args=(speech_queue,), daemon=True).start()
 
-# ------------------ DISTANCE CALC ------------------
+# ------------------ DISTANCE ------------------
 def calculate_distance(box, frame_width, label):
     obj_width = box.xyxy[0][2] - box.xyxy[0][0]
     if label in class_avg_sizes:
@@ -96,9 +92,9 @@ def get_position(frame_width, x1):
     else:
         return "right"
 
-# ------------------ CAMERA (USB FINAL FIX) ------------------
+# ------------------ CAMERA (PROVEN PIPELINE) ------------------
 gst_pipeline = (
-    "v4l2src device=/dev/video1 io-mode=2 ! "
+    "v4l2src device=/dev/video0 io-mode=2 ! "
     "video/x-raw,format=YUY2,width=640,height=480,framerate=30/1 ! "
     "videoconvert ! "
     "video/x-raw,format=BGR ! "
@@ -120,22 +116,22 @@ while True:
 
     results = model(frame, conf=0.4, verbose=False)[0]
 
-    nearest_obj = None
-    nearest_dist = float("inf")
+    nearest = None
+    min_dist = float("inf")
 
     for box in results.boxes:
         label = results.names[int(box.cls[0])]
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         dist = calculate_distance(box, frame.shape[1], label)
 
-        if dist < nearest_dist:
-            nearest_dist = dist
-            nearest_obj = (label, dist, x1)
+        if dist < min_dist:
+            min_dist = dist
+            nearest = (label, dist, x1)
 
-    if nearest_obj and nearest_dist <= 12:
-        label, dist, x1 = nearest_obj
-        position = get_position(frame.shape[1], x1)
-        speech_queue.put((label, dist, position))
+    if nearest and min_dist <= 12:
+        label, dist, x1 = nearest
+        pos = get_position(frame.shape[1], x1)
+        speech_queue.put((label, dist, pos))
 
 # ------------------ CLEANUP ------------------
 cap.release()
