@@ -13,12 +13,17 @@ import time
 # ------------------ GSTREAMER INIT ------------------
 Gst.init(None)
 
+print("USING PURE GSTREAMER CAMERA (DISPLAY + AUDIO)")
+
 # ------------------ PATHS ------------------
 MODEL_PATH = "yolov8n.pt"
 
+# ------------------ LOAD MODEL ------------------
+model = YOLO(MODEL_PATH)
+
 # ------------------ TTS INIT ------------------
 engine = pyttsx3.init()
-engine.setProperty('rate', 235)
+engine.setProperty('rate', 230)
 engine.setProperty('volume', 1.0)
 engine.say("System activated")
 engine.runAndWait()
@@ -27,7 +32,7 @@ engine.runAndWait()
 last_spoken = {}
 last_distances = {}
 speech_cooldown = 5
-queue = Queue()
+speech_queue = Queue()
 
 # ------------------ OBJECT WIDTH RATIOS ------------------
 class_avg_sizes = {
@@ -44,7 +49,7 @@ class_avg_sizes = {
 }
 
 # ------------------ SPEECH THREAD ------------------
-def speak(q):
+def speak_worker(q):
     while True:
         if not q.empty():
             label, distance, position = q.get()
@@ -69,18 +74,17 @@ def speak(q):
                 motion = "very close"
 
             last_distances[label] = distance
+            last_spoken[label] = now
 
             engine.say(f"{label} is {distance} meters on your {position}, {motion}")
             engine.runAndWait()
-
-            last_spoken[label] = now
 
             with q.mutex:
                 q.queue.clear()
         else:
             time.sleep(0.1)
 
-Thread(target=speak, args=(queue,), daemon=True).start()
+Thread(target=speak_worker, args=(speech_queue,), daemon=True).start()
 
 # ------------------ DISTANCE CALC ------------------
 def calculate_distance(box, frame_width, label):
@@ -100,13 +104,9 @@ def get_position(frame_width, coords):
     else:
         return "right"
 
-# ------------------ LOAD MODEL ------------------
-model = YOLO(MODEL_PATH)
-
 # =====================================================
-# ✅ CAMERA FIX (PURE GSTREAMER – WORKING)
+# CAMERA: PURE GSTREAMER (WORKING)
 # =====================================================
-
 pipeline = Gst.parse_launch(
     "v4l2src device=/dev/video0 ! "
     "video/x-raw,format=YUY2,width=640,height=480,framerate=30/1 ! "
@@ -150,7 +150,31 @@ while True:
             min_dist = dist
             nearest = (label, dist, coords)
 
+        # Draw bounding box
+        x1, y1, x2, y2 = coords
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(
+            frame,
+            f"{label} {dist}m",
+            (x1, y1 - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            2
+        )
+
     # ------------------ SPEECH TRIGGER ------------------
     if nearest and nearest[1] <= 12:
         pos = get_position(frame.shape[1], nearest[2])
-        queue.put((nearest[0], nearest[1], pos))
+        speech_queue.put((nearest[0], nearest[1], pos))
+
+    # ------------------ DISPLAY ------------------
+    cv2.imshow("Blind Assistant Camera", frame)
+
+    # Press Q to exit
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# ------------------ CLEANUP ------------------
+pipeline.set_state(Gst.State.NULL)
+cv2.destroyAllWindows()
